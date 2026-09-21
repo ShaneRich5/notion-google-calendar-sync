@@ -1,0 +1,11 @@
+# Secrets
+.env
+credentials.json
+token.json
+
+# Local
+.venv/
+sync.log*
+__pycache__/
+*.egg-info/
+.pytest_cache/
