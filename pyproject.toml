@@ -12,7 +12,7 @@ dependencies = [
     "notion-client>=3.0",
     "google-api-python-client>=2.100",
     "google-auth>=2.30",
-    "python-dotenv>=1.0",
+    "python-dotenv>=1.2.3",
     "tzdata; platform_system == 'Windows'",
 ]
 
