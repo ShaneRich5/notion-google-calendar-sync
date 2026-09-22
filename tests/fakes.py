@@ -158,8 +158,12 @@ class FakeNotion:
         return self._retrieve_source(data_source_id)
 
 
-def _http_error(status: int) -> HttpError:
-    return HttpError(httplib2.Response({"status": status}), b"{}")
+def _http_error(status: int, content: bytes = b"{}") -> HttpError:
+    return HttpError(httplib2.Response({"status": status}), content)
+
+
+def _forbidden_for_non_creator() -> HttpError:
+    return _http_error(403, b'{"error": {"errors": [{"reason": "forbiddenForNonCreator"}]}}')
 
 
 def _merge(target: dict[str, Any], patch: dict[str, Any]) -> None:
@@ -186,6 +190,8 @@ class FakeCalendar:
         self.store: dict[str, dict[str, Any]] = {}
         self.api_writes = 0
         self._ids = itertools.count(1)
+        self.foreign: set[str] = set()  # blocks patch (forbiddenForNonCreator)
+        self.undeletable: set[str] = set()  # blocks delete the same way
 
     def events(self) -> FakeCalendar:
         return self
@@ -201,6 +207,12 @@ class FakeCalendar:
 
     def user_delete(self, event_id: str) -> None:
         self.store[event_id]["status"] = "cancelled"
+
+    def mark_foreign(self, event_id: str, deletable: bool = True) -> None:
+        """Simulate an event created by someone other than the service account."""
+        self.foreign.add(event_id)
+        if not deletable:
+            self.undeletable.add(event_id)
 
     # The API surface used by Calendar.
 
@@ -246,6 +258,8 @@ class FakeCalendar:
         def run() -> dict[str, Any]:
             if eventId not in self.store:
                 raise _http_error(404)
+            if eventId in self.foreign:
+                raise _forbidden_for_non_creator()
             event = copy.deepcopy(self.store[eventId])
             _merge(event, body)
             event["updated"] = self.clock.tick()
@@ -260,6 +274,8 @@ class FakeCalendar:
         def run() -> None:
             if eventId not in self.store or self.store[eventId]["status"] == "cancelled":
                 raise _http_error(410)
+            if eventId in self.undeletable:
+                raise _forbidden_for_non_creator()
             self.store[eventId]["status"] = "cancelled"
             self.api_writes += 1
 

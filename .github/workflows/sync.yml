@@ -1,0 +1,59 @@
+name: Sync Notion tasks to Google Calendar
+
+on:
+  schedule:
+    # Every 10 minutes. GitHub can delay scheduled runs, more so right on the hour,
+    # so this isn't a guaranteed interval — treat it as "roughly every 10 minutes".
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {} # lets you trigger a run by hand from the Actions tab
+
+# If a run is still going when the next one is due, cancel it rather than queue up.
+# Safe here: every step the sync takes is idempotent, so a cancelled run just leaves
+# the next one to pick up wherever it left off.
+concurrency:
+  group: notion-gcal-sync
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install .
+
+      - name: Write the service account key
+        run: echo "$GCP_SERVICE_ACCOUNT_JSON" > service-account.json
+        env:
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+
+      - name: Sync
+        run: python -m notion_gcal_sync
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATA_SOURCE_ID: ${{ secrets.NOTION_DATA_SOURCE_ID }}
+          GOOGLE_CALENDAR_ID: ${{ secrets.GOOGLE_CALENDAR_ID }}
+          # Optional settings — only add the matching repo secret if you want a
+          # non-default value; an unset secret resolves to "" and from_env() then
+          # falls back to its own default, exactly as running locally with no .env.
+          TWO_WAY_SYNC: ${{ secrets.TWO_WAY_SYNC }}
+          TIMEZONE: ${{ secrets.TIMEZONE }}
+          DEFAULT_EVENT_MINUTES: ${{ secrets.DEFAULT_EVENT_MINUTES }}
+          COMPLETED_STATUSES: ${{ secrets.COMPLETED_STATUSES }}
+
+      - name: Upload the log if the sync failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-log
+          path: sync.log
+          retention-days: 7

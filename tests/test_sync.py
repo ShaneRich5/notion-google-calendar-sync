@@ -273,6 +273,60 @@ def test_many_tasks_across_pages_of_results(env):
     assert_settled(env)
 
 
+def test_editing_a_pre_service_account_event_recreates_it(env):
+    """An event created before the switch to a service account can't be patched in
+    place (Google's forbiddenForNonCreator); the sync should replace it instead."""
+    page = env.notion.add_task("Legacy event", due={"start": "2026-09-22"})
+    env.sync()
+    old_id = only_event(env)["id"]
+    env.gcal.mark_foreign(old_id)
+
+    env.notion.user_edit(page, title="Legacy event, renamed")
+    stats = env.sync()
+
+    assert stats.pushed == 1 and stats.blocked == 0
+    new_event = only_event(env)
+    assert new_event["id"] != old_id
+    assert new_event["summary"] == "Legacy event, renamed"
+    assert env.notion.prop(page, "GCal Event ID") == new_event["id"]
+    assert_settled(env)
+
+
+def test_fully_locked_event_is_reported_but_does_not_crash(env):
+    """If Google won't even let the service account delete the old event, the sync
+    should report it (stats.blocked) rather than raise or spin in a loop."""
+    page = env.notion.add_task("Stuck event", due={"start": "2026-09-22"})
+    env.sync()
+    old_id = only_event(env)["id"]
+    env.gcal.mark_foreign(old_id, deletable=False)
+
+    env.notion.user_edit(page, title="Stuck event, renamed")
+    stats = env.sync()
+
+    assert stats.blocked == 1
+    assert only_event(env)["id"] == old_id  # untouched
+    assert env.notion.prop(page, "GCal Event ID") == old_id  # still linked, not orphaned
+
+    # Retrying doesn't crash or duplicate anything either.
+    stats = env.sync()
+    assert stats.blocked == 1
+    assert len(env.gcal.live()) == 1
+
+
+def test_unticking_a_task_with_an_undeletable_event_is_reported(env):
+    page = env.notion.add_task("Can't unsync this one", due={"start": "2026-09-22"})
+    env.sync()
+    event_id = only_event(env)["id"]
+    env.gcal.mark_foreign(event_id, deletable=False)
+
+    env.notion.user_edit(page, checked=False)
+    stats = env.sync()
+
+    assert stats.blocked == 1 and stats.deleted == 0
+    assert only_event(env)["id"] == event_id  # still there
+    assert env.notion.prop(page, "GCal Event ID") == event_id  # left linked, not orphaned
+
+
 def test_setup_adds_missing_properties():
     clock = Clock()
     notion = FakeNotion(clock, schema={"Task name": "title", "Due": "date"})

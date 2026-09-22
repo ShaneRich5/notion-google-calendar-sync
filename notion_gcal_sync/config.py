@@ -24,9 +24,8 @@ class ConfigError(Exception):
 class Config:
     notion_token: str
     data_source_id: str
-    calendar_id: str = "primary"
-    google_credentials_file: Path = PROJECT_ROOT / "credentials.json"
-    google_token_file: Path = PROJECT_ROOT / "token.json"
+    calendar_id: str = ""
+    google_service_account_file: Path = PROJECT_ROOT / "service-account.json"
     two_way: bool = True
     default_duration_minutes: int = 60
     sync_interval_seconds: int = 300
@@ -56,7 +55,10 @@ class Config:
         load_dotenv(PROJECT_ROOT / ".env")
 
         def env(name: str, default: str = "") -> str:
-            return os.environ.get(name, default).strip()
+            # A variable set to "" is treated the same as unset. Both mean "use the
+            # default" here — e.g. GitHub Actions sets an unconfigured secret to "",
+            # not absent, so this keeps optional settings optional in CI too.
+            return os.environ.get(name, "").strip() or default
 
         token = env("NOTION_TOKEN")
         if not token:
@@ -64,6 +66,18 @@ class Config:
         data_source_id = env("NOTION_DATA_SOURCE_ID").removeprefix("collection://").replace("-", "").lower()
         if not data_source_id:
             raise ConfigError("NOTION_DATA_SOURCE_ID is not set (see .env.example).")
+
+        calendar_id = env("GOOGLE_CALENDAR_ID")
+        if not calendar_id:
+            raise ConfigError(
+                "GOOGLE_CALENDAR_ID is not set. A service account has no calendar of its own to default to: "
+                "set this to the calendar you shared with it, e.g. your Gmail address (see README)."
+            )
+        if calendar_id.lower() == "primary":
+            raise ConfigError(
+                "GOOGLE_CALENDAR_ID=primary won't work with a service account: 'primary' means the service "
+                "account's own (empty) calendar, not yours. Set it to the calendar you shared, e.g. your Gmail address."
+            )
 
         timezone_name = env("TIMEZONE")
         if timezone_name:
@@ -82,9 +96,8 @@ class Config:
         return cls(
             notion_token=token,
             data_source_id=data_source_id,
-            calendar_id=env("GOOGLE_CALENDAR_ID", "primary"),
-            google_credentials_file=PROJECT_ROOT / env("GOOGLE_CREDENTIALS_FILE", "credentials.json"),
-            google_token_file=PROJECT_ROOT / env("GOOGLE_TOKEN_FILE", "token.json"),
+            calendar_id=calendar_id,
+            google_service_account_file=PROJECT_ROOT / env("GOOGLE_SERVICE_ACCOUNT_FILE", "service-account.json"),
             two_way=env("TWO_WAY_SYNC", "true").lower() in {"1", "true", "yes", "on"},
             default_duration_minutes=duration,
             sync_interval_seconds=interval,

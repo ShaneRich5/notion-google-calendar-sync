@@ -39,7 +39,7 @@ def _setup(cfg: Config, notion: NotionTasks) -> int:
     for name in notion.check_schema(create_missing=True):
         log.info("Added the '%s' property to the Notion database", name)
     log.info("Notion: OK")
-    Calendar(build_service(cfg, interactive=True), cfg.calendar_id).check_access()
+    Calendar(build_service(cfg), cfg.calendar_id).check_access(cfg)
     log.info("Google Calendar: OK (calendar %r)", cfg.calendar_id)
     log.info(
         "Setup complete. Tick '%s' on a task that has a '%s' date, then run: python -m notion_gcal_sync",
@@ -52,7 +52,7 @@ def _setup(cfg: Config, notion: NotionTasks) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="notion-gcal-sync", description="Sync ticked Notion tasks with Google Calendar.")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--setup", action="store_true", help="add the sync properties to Notion and sign in to Google")
+    mode.add_argument("--setup", action="store_true", help="add the sync properties to Notion and check Google Calendar access")
     mode.add_argument("--watch", action="store_true", help="keep running, syncing every SYNC_INTERVAL_SECONDS")
     parser.add_argument("-v", "--verbose", action="store_true", help="also log unchanged and skipped tasks")
     args = parser.parse_args(argv)
@@ -66,7 +66,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.setup:
             return _setup(cfg, notion)
         notion.check_schema()
-        syncer = Syncer(cfg, notion, Calendar(build_service(cfg), cfg.calendar_id))
+        calendar = Calendar(build_service(cfg), cfg.calendar_id)
+        calendar.check_access(cfg)
+        syncer = Syncer(cfg, notion, calendar)
     except ConfigError as exc:
         log.error("%s", exc)
         return 2
@@ -78,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             log.exception("Sync failed")
             return 1
         log.info("Sync finished: %s", stats)
-        return 1 if stats.errors else 0
+        return 1 if stats.errors or stats.blocked else 0
 
     log.info("Syncing every %s seconds. Press Ctrl+C to stop.", cfg.sync_interval_seconds)
     try:

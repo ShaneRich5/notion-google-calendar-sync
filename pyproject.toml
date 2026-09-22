@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "notion-client>=3.0",
     "google-api-python-client>=2.100",
-    "google-auth-oauthlib>=1.2",
+    "google-auth>=2.30",
     "python-dotenv>=1.0",
     "tzdata; platform_system == 'Windows'",
 ]

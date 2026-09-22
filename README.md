@@ -40,17 +40,26 @@ Only the title and time sync back from Google. Everything else is owned by Notio
    Your `tasks` dashboard page only holds *linked views* of this database, so connect
    the integration to the database itself (or to a page that contains it), not the dashboard.
 
-### 2. Create Google OAuth credentials
+### 2. Create a Google service account
+
+The sync signs in as a **service account** — a non-human Google identity authenticated
+with a private key instead of a browser sign-in. There's no "unverified app" warning
+and no expiring token, and the same key works whether the sync runs on this laptop or
+in GitHub Actions. You share your calendar with it, the same way you'd share it with
+a person.
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), create a project.
 2. **APIs & Services → Library**: enable **Google Calendar API**.
-3. **Google Auth Platform → Audience**: choose **External** and add your Gmail address
-   as a test user. Then click **Publish app**. While an app is in *Testing*, Google
-   expires its sign-ins after 7 days, which would stop an unattended sync. Publishing
-   a personal app is fine: when you sign in, Google warns that it's unverified; click
-   **Advanced → Go to (app name)**.
-4. **Clients → Create client → Desktop app**. Download the JSON and save it in this
-   folder as `credentials.json`.
+3. **IAM & Admin → Service Accounts → Create service account**. Any name (e.g.
+   `notion-calendar-sync`) — it needs no roles or extra access, just skip those steps.
+4. Open the new service account → **Keys → Add key → Create new key → JSON**. This
+   downloads a `.json` file — save it in this folder as `service-account.json`. It's a
+   secret: never share it or commit it (already covered by `.gitignore`).
+5. Open the downloaded file and copy the `client_email` value, e.g.
+   `notion-calendar-sync@your-project.iam.gserviceaccount.com`.
+6. In [Google Calendar](https://calendar.google.com/), find the calendar you want to
+   sync to → **Settings and sharing → Share with specific people** → add that email
+   → permission **Make changes to events** → **Send**.
 
 ### 3. Install and configure
 
@@ -58,13 +67,13 @@ Only the title and time sync back from Google. Everything else is owned by Notio
 cd C:\Users\shane\Projects\notion-google-calendar-sync
 py -3.11 -m venv .venv                  # needs Python 3.10+
 .venv\Scripts\pip install -e ".[dev]"
-copy .env.example .env                   # then paste NOTION_TOKEN into .env
+copy .env.example .env                   # then edit .env
 ```
 
-`NOTION_DATA_SOURCE_ID` in `.env.example` is already set to your tasks database.
-Set `GOOGLE_CALENDAR_ID` if you don't want to use your main calendar. A dedicated
-"Notion Tasks" calendar is easy to hide or colour separately. You'll find its ID in
-Google Calendar under **Settings → (calendar) → Integrate calendar**.
+In `.env`, fill in `NOTION_TOKEN` and `GOOGLE_CALENDAR_ID` — the calendar you shared
+with the service account in step 2.6, usually just your Gmail address (**not**
+`primary`: that means the service account's own empty calendar, not yours).
+`NOTION_DATA_SOURCE_ID` is already set to your tasks database.
 
 ### 4. Run setup
 
@@ -73,7 +82,7 @@ Google Calendar under **Settings → (calendar) → Integrate calendar**.
 ```
 
 This adds the **Sync to Calendar** (checkbox) and **GCal Event ID** (text) properties to
-the database, opens a browser to sign in to Google, and checks it can reach the calendar.
+the database, and checks the service account can reach the calendar you shared.
 
 ### 5. Sync
 
@@ -85,9 +94,34 @@ the database, opens a browser to sign in to Google, and checks it can reach the 
 
 Logs are also written to `sync.log`.
 
-## Running it automatically on Windows
+## Running it automatically
 
-To sync every 5 minutes in the background with no console window, run this in PowerShell:
+### Remotely, with GitHub Actions (recommended)
+
+`.github/workflows/sync.yml` runs the sync roughly every 10 minutes on GitHub's
+servers — no computer of yours needs to stay on. It needs your settings as
+**repository secrets** (GitHub repo → **Settings → Secrets and variables → Actions →
+New repository secret**):
+
+| Secret | Value |
+| --- | --- |
+| `NOTION_TOKEN` | Your Notion integration secret |
+| `NOTION_DATA_SOURCE_ID` | `493101e3-fc1d-403b-9957-0be55bf4baaf` |
+| `GOOGLE_CALENDAR_ID` | The calendar you shared with the service account |
+| `GCP_SERVICE_ACCOUNT_JSON` | The **entire contents** of `service-account.json`, pasted as one secret |
+
+That's everything required. `TWO_WAY_SYNC`, `TIMEZONE`, `DEFAULT_EVENT_MINUTES` and
+`COMPLETED_STATUSES` are optional secrets — add one only if you want a non-default
+value, same as in `.env`.
+
+Once the secrets are set, it starts running on its own schedule. To run it once by
+hand: GitHub repo → **Actions → Sync Notion tasks to Google Calendar → Run workflow**.
+If a run fails, its log is attached to that run under **Artifacts**.
+
+### Locally, on Windows
+
+Useful for testing changes before they reach GitHub Actions, or if you'd rather not
+rely on it at all. To sync every 5 minutes in the background with no console window:
 
 ```powershell
 $dir = "C:\Users\shane\Projects\notion-google-calendar-sync"
@@ -97,6 +131,9 @@ Register-ScheduledTask -TaskName "Notion Google Calendar Sync" -Action $action -
 ```
 
 To remove it later: `Unregister-ScheduledTask -TaskName "Notion Google Calendar Sync"`.
+
+Running both at once is fine — they use the same fingerprint-based change detection,
+so there's no conflict, just faster syncing.
 
 ## FAQ
 
@@ -121,7 +158,13 @@ the old events on the new calendar, treats them as deleted, and unticks the task
 
 **Why is there a delay?**
 The sync polls; it doesn't get pushed changes. Changes appear on the next run: within
-5 minutes with the scheduled task or `--watch`.
+5 minutes locally (`--watch` or the scheduled task), or roughly 10 minutes on GitHub
+Actions — its schedule isn't exact and can run a few minutes late, especially right on
+the hour.
+
+**Can I use GitHub Actions and run it locally at the same time?**
+Yes — see "Running it automatically" above. Useful while testing a change: run it
+locally to see the result immediately, without waiting for GitHub Actions' schedule.
 
 ## Development
 
@@ -137,6 +180,7 @@ The tests run the whole sync against in-memory fakes of the Notion and Google AP
 | `notion_gcal_sync/sync.py` | The sync engine: what to create, update, pull or delete |
 | `notion_gcal_sync/model.py` | Task ↔ event conversion, date handling, change fingerprints |
 | `notion_gcal_sync/notion_api.py` | Notion queries, page updates, schema setup |
-| `notion_gcal_sync/gcal_api.py` | Google sign-in and event calls |
+| `notion_gcal_sync/gcal_api.py` | Google service account auth and event calls |
 | `notion_gcal_sync/config.py` | Settings from `.env` |
 | `notion_gcal_sync/__main__.py` | Command line |
+| `.github/workflows/sync.yml` | Scheduled remote sync via GitHub Actions |

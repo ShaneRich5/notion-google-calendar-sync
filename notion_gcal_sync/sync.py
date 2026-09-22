@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 
 from .config import Config
-from .gcal_api import Calendar, Event
+from .gcal_api import Calendar, Event, NotEventOwner
 from .model import (
     EVENT_HASH_KEY,
     NOTION_HASH_KEY,
@@ -33,11 +33,14 @@ class Stats:
     unlinked: int = 0
     unchanged: int = 0
     skipped: int = 0
+    blocked: int = 0
     errors: int = 0
 
     @property
     def changed(self) -> bool:
-        return bool(self.created or self.pushed or self.pulled or self.deleted or self.unlinked or self.errors)
+        return bool(
+            self.created or self.pushed or self.pulled or self.deleted or self.unlinked or self.blocked or self.errors
+        )
 
     def __str__(self) -> str:
         return ", ".join(f"{count} {name}" for name, count in vars(self).items() if count) or "nothing to sync"
@@ -104,7 +107,16 @@ class Syncer:
 
         if not task.checked or task.when is None:
             if event is not None:
-                self.calendar.delete(event["id"])
+                try:
+                    self.calendar.delete(event["id"])
+                except NotEventOwner:
+                    stats.blocked += 1
+                    log.warning(
+                        "Can't remove the event for %r: it predates the service account and Google won't let it "
+                        "delete an event it didn't create. Delete it by hand in Google Calendar.",
+                        task.title,
+                    )
+                    return
                 stats.deleted += 1
                 reason = "unticked" if not task.checked else f"no {self.cfg.prop_date} date"
                 log.info("Removed event for %r (%s)", task.title, reason)
@@ -150,7 +162,24 @@ class Syncer:
             stats.pushed += 1
             log.info("Updated event for %r", task.title)
         # Always patch: it writes the new fingerprints, and pushes any Notion-only fields.
-        self.calendar.patch(event["id"], body)
+        try:
+            self.calendar.patch(event["id"], body)
+        except NotEventOwner:
+            # Predates the service account (created under the old OAuth sign-in). Google
+            # won't let it edit that event in place, so replace it with a fresh one the
+            # service account owns; this won't happen again for events it creates itself.
+            try:
+                recreated = self.calendar.replace(event["id"], body)
+            except NotEventOwner:
+                stats.blocked += 1
+                log.warning(
+                    "Can't update the event for %r: it predates the service account and Google won't even let "
+                    "it delete an event it didn't create. Delete it by hand in Google Calendar.",
+                    task.title,
+                )
+                return
+            self.notion.set_event_id(task.page_id, recreated["id"])
+            log.info("Recreated the event for %r under the service account", task.title)
 
     def _pull(self, task: Task, event: Event) -> Task:
         """Copy the event's title and time into the Notion task."""
@@ -169,6 +198,15 @@ class Syncer:
             page = self.notion.get_page(page_id) if page_id else None
             if page and not (page.get("in_trash") or page.get("archived")) and Task.from_page(page, self.cfg).checked:
                 return  # Still wanted; the next query will pick it up.
-        self.calendar.delete(event["id"])
+        try:
+            self.calendar.delete(event["id"])
+        except NotEventOwner:
+            stats.blocked += 1
+            log.warning(
+                "Can't remove event %r: it predates the service account and Google won't let it delete an "
+                "event it didn't create. Delete it by hand in Google Calendar.",
+                event.get("summary"),
+            )
+            return
         stats.deleted += 1
         log.info("Removed event %r: its Notion task was deleted, unticked or already has an event", event.get("summary"))

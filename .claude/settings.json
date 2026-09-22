@@ -2,6 +2,7 @@
   "permissions": {
     "deny": [
       "Read(.env)",
+      "Read(service-account.json)",
       "Read(credentials.json)",
       "Read(token.json)"
     ]
