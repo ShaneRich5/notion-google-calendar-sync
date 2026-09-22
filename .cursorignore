@@ -1,0 +1,4 @@
+# Secrets. Kept in sync with .gitignore and .claude/settings.json.
+.env
+credentials.json
+token.json
